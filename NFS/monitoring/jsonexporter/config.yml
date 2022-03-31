@@ -1,0 +1,12 @@
+metrics:
+- name: coinstats
+  type: object
+  path: '{ @ }'
+  help: api.coinstats.app export
+  labels:
+    asset: 'crypto'
+  values:
+    btc_price: '{ $.coins[?(@.symbol == "BTC")].price }'
+    eth_price: '{ $.coins[?(@.symbol == "ETH")].price }'
+    cro_price: '{ $.coins[?(@.symbol == "CRO")].price }'
+    bnb_price: '{ $.coins[?(@.symbol == "BNB")].price }'

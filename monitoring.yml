@@ -1,0 +1,427 @@
+# NAMESPACE MONITORING
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: monitoring
+  labels:
+    name: monitoring
+
+---
+
+# NAMESPACE MONITORING > redis-cluster SERVICE
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-cluster-service
+  namespace: monitoring
+  labels:
+    app: redis-cluster
+spec:
+  type: NodePort
+  ports:
+  - port: 6379
+    nodePort: 30079
+  selector:
+    app: redis-cluster
+
+---
+
+# NAMESPACE MONITORING > redis-cluster-0 SERVICE
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-cluster-service-0
+  namespace: monitoring
+  labels:
+    app: redis-cluster-0
+spec:
+  type: ClusterIP
+  ports:
+  - port: 6379
+  selector:
+    statefulset.kubernetes.io/pod-name: redis-cluster-0
+
+---
+
+# NAMESPACE MONITORING > redis-cluster-1 SERVICE
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-cluster-service-1
+  namespace: monitoring
+  labels:
+    app: redis-cluster-1
+spec:
+  type: ClusterIP
+  ports:
+  - port: 6379
+  selector:
+    statefulset.kubernetes.io/pod-name: redis-cluster-1
+
+---
+
+# NAMESPACE MONITORING > redis-cluster-2 SERVICE
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-cluster-service-2
+  namespace: monitoring
+  labels:
+    app: redis-cluster-2
+spec:
+  type: ClusterIP
+  ports:
+  - port: 6379
+  selector:
+    statefulset.kubernetes.io/pod-name: redis-cluster-2
+
+---
+
+# NAMESPACE MONITORING > redis-cluster CONFIGMAP
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-cluster-config
+  namespace: monitoring
+data:
+  emptyPass: "yes"
+  # useless but required
+  nodes: "redis-cluster-service-0 redis-cluster-service-1 redis-cluster-service-2"
+
+---
+
+# NAMESPACE LLL > redis-cluster STATEFULSET
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis-cluster
+  namespace: monitoring
+spec:
+  selector:
+    matchLabels:
+      app: redis-cluster
+  serviceName: "redis-cluster"
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        app: redis-cluster
+    spec:
+      containers:
+      - name: redis-cluster
+        image: docker.io/bitnami/redis-cluster
+        env:
+        - name: ALLOW_EMPTY_PASSWORD
+          valueFrom:
+            configMapKeyRef:
+              name: redis-cluster-config
+              key: emptyPass
+        - name: REDIS_NODES
+          valueFrom:
+            configMapKeyRef:
+              name: redis-cluster-config
+              key: nodes
+        ports:
+        - containerPort: 6379
+          name: redis-cluster
+
+# # Redis cluster initialization 
+# export NAMESPACE=monitoring
+# export REDIS_PODS=$(kubectl get pods -l app=redis-cluster -n $NAMESPACE -o jsonpath='{range.items[*]}{.status.podIP}:6379 ' | sed -r 's/\ :6379//g')
+# kubectl exec -n $NAMESPACE -it redis-cluster-0 -- redis-cli --cluster create --cluster-replicas 0 $REDIS_PODS
+
+# # Redis cluster info
+# export NAMESPACE=monitoring
+# kubectl exec -it redis-cluster-0 -n $NAMESPACE -- redis-cli cluster info
+# for x in $(seq 0 2); do echo "redis-cluster-$x"; kubectl exec redis-cluster-$x -n $NAMESPACE -- redis-cli role; echo; done
+
+---
+
+# NAMESPACE MONITORING > jsonexporter DEPLOYMENT
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jsonexporter
+  namespace: monitoring
+spec:
+  selector:
+    matchLabels:
+      app: jsonexporter
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: jsonexporter
+    spec:
+      containers:
+      - image: quay.io/prometheuscommunity/json-exporter
+        name: jsonexporter
+        args: ["--config.file","/config.yml"]
+        ports:
+        - containerPort: 7979
+          name: jsonexporter
+        volumeMounts:
+        - name: jsonexporter-persistent-storage
+          mountPath: /config.yml
+          subPath: jsonexporter/config.yml
+      volumes:
+      - name: jsonexporter-persistent-storage
+        persistentVolumeClaim:
+          claimName: monitoring-claim
+
+---
+
+# NAMESPACE MONITORING > jsonexporter SERVICE
+apiVersion: v1
+kind: Service
+metadata:
+  name: jsonexporter-service
+  namespace: monitoring
+  labels:
+    app: jsonexporter
+spec:
+  type: ClusterIP
+  ports:
+  - port: 7979
+  selector:
+    app: jsonexporter
+
+---
+
+# NAMESPACE MONITORING > Prometheus DEPLOYMENT
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: monitoring
+spec:
+  selector:
+    matchLabels:
+      app: prometheus
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      containers:
+      - image: prom/prometheus
+        name: prometheus
+        ports:
+        - containerPort: 9090
+          name: prometheus
+        volumeMounts:
+        - name: prometheus-persistent-storage
+          mountPath: /etc/prometheus/
+          subPath: prometheus/root/etc/prometheus/
+        - name: prometheus-persistent-storage
+          mountPath: /prometheus/
+          subPath: prometheus/root/prometheus/
+      volumes:
+      - name: prometheus-persistent-storage
+        persistentVolumeClaim:
+          claimName: monitoring-claim
+
+---
+
+# NAMESPACE MONITORING > Prometheus SERVICE
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus-service
+  namespace: monitoring
+  labels:
+    app: prometheus
+spec:
+  type: ClusterIP
+  ports:
+  - port: 9090
+  selector:
+    app: prometheus
+
+---
+
+# NAMESPACE MONITORING > Grafana CONFIGMAP
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-config
+  namespace: monitoring
+data:
+  # specify service name
+  plugins: "grafana-clock-panel"
+  anonymous: "true"
+  #GF_LIVE_HA_ENGINE
+  haEngine: "redis"
+  #GF_LIVE_HA_ENGINE_ADDRESS
+  haEngineAddr: "redis-cluster-service:6379"
+
+---
+
+# NAMESPACE MONITORING > Grafana DEPLOYMENT
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: monitoring
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: grafana
+  strategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+      - image: grafana/grafana
+        name: grafana
+        env:
+        - name: GF_INSTALL_PLUGINS
+          valueFrom:
+            configMapKeyRef:
+              name: grafana-config
+              key: plugins
+        - name: GF_AUTH_ANONYMOUS_ENABLED
+          valueFrom:
+            configMapKeyRef:
+              name: grafana-config
+              key: anonymous
+        - name: GF_LIVE_HA_ENGINE
+          valueFrom:
+            configMapKeyRef:
+              name: grafana-config
+              key: haEngine
+        - name: GF_LIVE_HA_ENGINE_ADDRESS
+          valueFrom:
+            configMapKeyRef:
+              name: grafana-config
+              key: haEngineAddr
+        ports:
+        - containerPort: 3000
+          name: grafana
+        volumeMounts:
+        - name: grafana-persistent-storage
+          mountPath: /etc/grafana/provisioning/
+          subPath: grafana/root/etc/grafana/provisioning/
+      volumes:
+      - name: grafana-persistent-storage
+        persistentVolumeClaim:
+          claimName: monitoring-claim
+
+---
+
+# NAMESPACE MONITORING > Grafana SERVICE
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana-service
+  namespace: monitoring
+  labels:
+    app: grafana
+spec:
+  type: ClusterIP
+  ports:
+  - port: 3000
+  selector:
+    app: grafana
+
+---
+
+# NAMESPACE MONITORING > Grafana INGRESS
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grafana-ingress
+  namespace: monitoring
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+spec:
+  rules:
+  - http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: grafana-service
+            port:
+              number: 3000
+
+---
+
+## NAMESPACE INGRESS-NGINX > PROXY Promethus INGRESS
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tcp-services
+  namespace: ingress-nginx
+data:
+  9090: "monitoring/prometheus-service:9090"
+##TO LOAD tcp-services CONFIGMAP
+# kubectl edit deployment/ingress-nginx-controller -n ingress-nginx
+##ADD
+#    spec:
+#      containers:
+#      - args:
+#        - --tcp-services-configmap=$(POD_NAMESPACE)/tcp-services
+#
+##TO EXPOSE PORT
+# kubectl edit -n ingress-nginx svc/ingress-nginx-controller
+##add to expose port
+#   - name: proxied-tcp-9090
+#     port: 9090
+#     targetPort: 9090
+#     protocol: TCP
+
+---
+
+# NAMESPACE MONITORING > PERSISTENT VOLUME CLAIM 
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: monitoring-claim
+  namespace: monitoring
+spec:
+  accessModes:
+  - ReadWriteMany
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+
+# STORAGE CLASS NFS
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: standard
+provisioner: kube01/NFS
+parameters:
+  server: kube01
+  path: /NFS
+  readOnly: "false"
+
+---
+
+# STORAGE CLASS > PERSISTENT VOLUME
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: monitoring-pv
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+  - ReadWriteMany
+  persistentVolumeReclaimPolicy: Recycle
+  storageClassName: standard
+  nfs:
+    path: /NFS/monitoring
+    server: kube01
